@@ -163,7 +163,9 @@ static int tail_bytes_from_end(int fd, long long count)
         return (n < 0) ? -1 : 0;
     }
 
-    /* stdin or a pipe: buffer everything in a circular byte buffer. */
+    /* stdin or a pipe: buffer everything in a circular byte buffer.
+     * count > 0 is guaranteed by the early return above, so pos % count
+     * is always well-defined. */
     char *ring = malloc((size_t)count);
     if (!ring) die("tail: malloc");
 
@@ -247,15 +249,20 @@ static int tail_lines_seekable(int fd, long long count)
 
     /* Read backwards in chunks counting newlines. */
     char buf[READ_BUF_SIZE];
-    long long newlines = 0;
     off_t pos = file_size;
 
-    /* If the file ends with a newline we don't count it as an extra line. */
+    /* If the file ends with a newline we don't count it as a separate line
+     * (consistent with GNU tail behaviour). */
+    int has_trailing_newline = 0;
     off_t last_byte_pos = file_size - 1;
     if (lseek(fd, last_byte_pos, SEEK_SET) == (off_t)-1) die("tail: lseek");
     char last;
     if (read(fd, &last, 1) == 1 && last == '\n')
-        newlines = -1;  /* compensate */
+        has_trailing_newline = 1;
+
+    /* Start counting from -1 when there is a trailing newline so that the
+     * final '\n' is not treated as the boundary of an extra empty line. */
+    long long newlines = has_trailing_newline ? -1 : 0;
 
     while (pos > 0) {
         off_t chunk = (pos > (off_t)sizeof(buf)) ? (off_t)sizeof(buf) : pos;
@@ -326,12 +333,13 @@ static int tail_lines_pipe(int fd, long long count)
     if (buf.size == 0) { free(buf.data); return 0; }
 
     /* Scan backwards counting newlines. */
-    long long newlines = 0;
-    /* Ignore trailing newline (same as seekable version). */
+    /* If the buffer ends with a newline, don't count it as a separate line
+     * (consistent with GNU tail behaviour). */
     size_t end = buf.size;
-    if (buf.data[end - 1] == '\n') {
-        newlines = -1;
-    }
+    int has_trailing_newline = (buf.data[end - 1] == '\n');
+    /* Start from -1 when there is a trailing newline so that it is not
+     * treated as the boundary of an extra empty line. */
+    long long newlines = has_trailing_newline ? -1 : 0;
 
     size_t start_pos = 0;
     for (size_t i = end; i > 0; ) {
